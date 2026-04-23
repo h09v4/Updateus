@@ -1,0 +1,112 @@
+import { useCallback, useEffect, useState } from 'react'
+import { supabase } from '../lib/supabase'
+import type { Note } from '../lib/supabase'
+
+function fmtDate(ts: string) {
+  const d = new Date(ts), t = new Date()
+  return d.toDateString()===t.toDateString() ? d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : d.toLocaleDateString([],{month:'short',day:'numeric'})
+}
+
+export default function Notes({ userId }: { userId: string }) {
+  const [notes, setNotes]       = useState<Note[]>([])
+  const [active, setActive]     = useState<Note|null>(null)
+  const [isNew, setIsNew]       = useState(false)
+  const [title, setTitle]       = useState('')
+  const [content, setContent]   = useState('')
+  const [shared, setShared]     = useState(true)
+  const [loading, setLoading]   = useState(true)
+  const [saving, setSaving]     = useState(false)
+  const [saved, setSaved]       = useState(false)
+
+  const load = useCallback(async () => {
+    const { data } = await supabase.from('notes').select('*, profiles(*)').order('updated_at',{ascending:false})
+    if (data) setNotes(data as Note[]); setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    load()
+    const ch = supabase.channel('notes').on('postgres_changes',{event:'*',schema:'public',table:'notes'},load).subscribe()
+    return () => { supabase.removeChannel(ch) }
+  }, [load])
+
+  function openNote(n: Note) { setActive(n); setIsNew(false); setTitle(n.title); setContent(n.content); setShared(n.is_shared); setSaved(false) }
+  function newNote() { setActive(null); setIsNew(true); setTitle('Untitled'); setContent(''); setShared(true); setSaved(false) }
+
+  async function save() {
+    setSaving(true); setSaved(false)
+    if (isNew) {
+      const { data } = await supabase.from('notes').insert({ title, content, is_shared:shared, created_by:userId }).select('*, profiles(*)').single()
+      if (data) { setActive(data as Note); setIsNew(false); setNotes(p => [data as Note, ...p]) }
+    } else if (active) {
+      const { data } = await supabase.from('notes').update({ title, content, is_shared:shared }).eq('id',active.id).select('*, profiles(*)').single()
+      if (data) { setActive(data as Note); setNotes(p => p.map(n => n.id===data.id ? data as Note : n)) }
+    }
+    setSaving(false); setSaved(true); setTimeout(()=>setSaved(false),2000)
+  }
+
+  async function del(id: string) {
+    if (!confirm('Delete this note?')) return
+    await supabase.from('notes').delete().eq('id',id)
+    setNotes(p => p.filter(n => n.id!==id))
+    if (active?.id===id) { setActive(null); setIsNew(false) }
+  }
+
+  const canEdit = isNew || active?.created_by===userId
+  const hasEditor = isNew || active!==null
+
+  return (
+    <div className="notes-layout">
+      {/* List */}
+      <div className="notes-list-pane">
+        <div className="notes-list-head">
+          <span className="notes-list-title">Notes</span>
+          <button className="btn btn-blue btn-sm" onClick={newNote}>+ New</button>
+        </div>
+        <div className="notes-list">
+          {loading && <div style={{ padding:16, color:'var(--text-3)', fontSize:13 }}>Loading...</div>}
+          {!loading && notes.length===0 && <div style={{ padding:16, color:'var(--text-3)', fontSize:13 }}>No notes yet</div>}
+          {notes.map(n => (
+            <div key={n.id} className={`note-row ${active?.id===n.id?'active':''}`} onClick={() => openNote(n)}>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:6, marginBottom:3 }}>
+                <div className="note-row-title">{n.title}</div>
+                <span className={`tag ${n.is_shared?'tag-shared':'tag-private'}`}>{n.is_shared?'shared':'private'}</span>
+              </div>
+              <div className="note-row-preview">{n.content||'Empty...'}</div>
+              <div className="note-row-meta">
+                <span>{n.profiles?.username||'?'}</span>
+                <span>{fmtDate(n.updated_at)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Editor */}
+      <div className="note-editor">
+        {hasEditor ? (<>
+          <div className="note-edit-head">
+            <input className="note-title-input" value={title} onChange={e=>setTitle(e.target.value)} placeholder="Note title..." readOnly={!canEdit} />
+            <div style={{ display:'flex', alignItems:'center', gap:8, flexShrink:0 }}>
+              {canEdit && (
+                <button className="btn btn-ghost btn-sm" onClick={() => setShared(!shared)}>
+                  {shared ? '🌐 Shared' : '🔒 Private'}
+                </button>
+              )}
+              {active?.created_by===userId && <button className="btn btn-red btn-sm" onClick={() => active && del(active.id)}>Delete</button>}
+              {canEdit && <button className="btn btn-blue btn-sm" onClick={save} disabled={saving}>{saving?'Saving...':saved?'✓ Saved':'Save'}</button>}
+            </div>
+          </div>
+          <textarea className="note-body" value={content} onChange={e=>setContent(e.target.value)} placeholder="Start writing..." readOnly={!canEdit}
+            onKeyDown={e=>{ if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();if(canEdit)save()} }} />
+          {canEdit && <div style={{ padding:'6px 20px', borderTop:'1px solid var(--border)', fontSize:11, color:'var(--text-3)' }}>Ctrl+S to save</div>}
+        </>) : (
+          <div className="empty">
+            <div className="empty-icon">📝</div>
+            <div className="empty-text">Select a note or create a new one</div>
+            <button className="btn btn-blue" onClick={newNote}>New Note</button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

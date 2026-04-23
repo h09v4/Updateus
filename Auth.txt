@@ -1,0 +1,71 @@
+import { useState } from 'react'
+import { supabase } from '../lib/supabase'
+
+export default function Auth() {
+  const [mode, setMode]         = useState<'login'|'signup'>('login')
+  const [email, setEmail]       = useState('')
+  const [password, setPassword] = useState('')
+  const [username, setUsername] = useState('')
+  const [fullName, setFullName] = useState('')
+  const [error, setError]       = useState('')
+  const [success, setSuccess]   = useState('')
+  const [loading, setLoading]   = useState(false)
+
+  async function submit() {
+    setError(''); setSuccess('')
+    if (!email || !password) { setError('Email and password required'); return }
+    if (mode === 'signup' && !username) { setError('Username required'); return }
+    setLoading(true)
+    if (mode === 'signup') {
+      const { error: e } = await supabase.auth.signUp({ email, password, options: { data: { username: username.toLowerCase().trim(), full_name: fullName.trim() } } })
+      if (e) setError(e.message); else setSuccess('Account created! Sign in now.')
+    } else {
+      const { error: e } = await supabase.auth.signInWithPassword({ email, password })
+      if (e) setError(e.message)
+    }
+    setLoading(false)
+  }
+
+  function switchMode(m: 'login'|'signup') { setMode(m); setError(''); setSuccess('') }
+
+  return (
+    <div className="auth-wrap">
+      <div className="auth-card">
+        <div className="auth-logo">Nexus</div>
+        <div className="auth-sub">Your private squad workspace</div>
+
+        <div className="auth-tabs">
+          <button className={`auth-tab ${mode==='login' ? 'active':''}`} onClick={() => switchMode('login')}>Sign In</button>
+          <button className={`auth-tab ${mode==='signup'? 'active':''}`} onClick={() => switchMode('signup')}>Sign Up</button>
+        </div>
+
+        {mode === 'signup' && <>
+          <div className="form-group">
+            <label className="form-label">Username</label>
+            <input className="input" placeholder="yourname" autoCapitalize="none" value={username} onChange={e => setUsername(e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Full Name (optional)</label>
+            <input className="input" placeholder="Your Name" value={fullName} onChange={e => setFullName(e.target.value)} />
+          </div>
+        </>}
+
+        <div className="form-group">
+          <label className="form-label">Email</label>
+          <input className="input" type="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Password</label>
+          <input className="input" type="password" placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key==='Enter' && submit()} />
+        </div>
+
+        {error   && <div className="alert alert-err">{error}</div>}
+        {success && <div className="alert alert-ok">{success}</div>}
+
+        <button className="btn btn-blue" style={{ width:'100%', padding:'10px' }} onClick={submit} disabled={loading}>
+          {loading ? 'Loading...' : mode==='login' ? 'Sign In' : 'Create Account'}
+        </button>
+      </div>
+    </div>
+  )
+}

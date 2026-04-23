@@ -1,0 +1,238 @@
+import { useCallback, useEffect, useState } from 'react'
+import { supabase } from '../lib/supabase'
+import type { Project, Task, Profile } from '../lib/supabase'
+
+const COLORS = ['#2383e2','#0f7b6c','#dfab01','#e03e3e','#6940a5','#d9730d','#3d8361','#ad1a72']
+const ST_LABEL = { todo:'To Do', in_progress:'In Progress', done:'Done' }
+const ST_CLASS = { todo:'tag-todo', in_progress:'tag-prog', done:'tag-done' }
+
+function fmtDue(d: string|null) {
+  if (!d) return null
+  const dt = new Date(d), today = new Date(); today.setHours(0,0,0,0)
+  return { str: dt.toLocaleDateString([],{month:'short',day:'numeric'}), overdue: dt<today }
+}
+
+export default function Projects({ userId, allUsers, myProfile }: { userId:string; allUsers:Profile[]; myProfile:Profile|null }) {
+  const [projects, setProjects]   = useState<Project[]>([])
+  const [active, setActive]       = useState<Project|null>(null)
+  const [tasks, setTasks]         = useState<Task[]>([])
+  const [loading, setLoading]     = useState(true)
+  const [showNewProj, setShowNewProj] = useState(false)
+  const [showTask, setShowTask]   = useState(false)
+  const [editTask, setEditTask]   = useState<Task|null>(null)
+
+  const [pName, setPName] = useState(''); const [pDesc, setPDesc] = useState(''); const [pColor, setPColor] = useState(COLORS[0])
+  const [tTitle, setTTitle]=useState(''); const [tDesc, setTDesc]=useState(''); const [tAssign, setTAssign]=useState(''); const [tDue, setTDue]=useState(''); const [tStatus, setTStatus]=useState<'todo'|'in_progress'|'done'>('todo')
+  const [saving, setSaving] = useState(false)
+
+  const loadProjects = useCallback(async () => {
+    const { data } = await supabase.from('projects').select('*').order('created_at',{ascending:true})
+    if (data) { setProjects(data); setActive(a => a ?? (data[0]||null)) }
+    setLoading(false)
+  }, [])
+
+  const loadTasks = useCallback(async (pid: string) => {
+    const { data } = await supabase.from('tasks').select('*, profiles_assigned:assigned_to(id,username,full_name)').eq('project_id',pid).order('created_at',{ascending:true})
+    if (data) setTasks(data as Task[])
+  }, [])
+
+  useEffect(() => { loadProjects() }, [loadProjects])
+  useEffect(() => {
+    if (!active) return; loadTasks(active.id)
+    const ch = supabase.channel(`tasks:${active.id}`).on('postgres_changes',{event:'*',schema:'public',table:'tasks',filter:`project_id=eq.${active.id}`},()=>loadTasks(active.id)).subscribe()
+    return () => { supabase.removeChannel(ch) }
+  }, [active?.id, loadTasks])
+
+  async function createProject() {
+    if (!pName.trim()) return; setSaving(true)
+    const { data } = await supabase.from('projects').insert({ name:pName.trim(), description:pDesc.trim(), color:pColor, created_by:userId }).select().single()
+    if (data) { setProjects(p=>[...p,data]); setActive(data) }
+    setShowNewProj(false); setPName(''); setPDesc(''); setSaving(false)
+  }
+
+  async function delProject(id: string) {
+    if (!confirm('Delete this project and all tasks?')) return
+    await supabase.from('projects').delete().eq('id',id)
+    setProjects(p=>p.filter(x=>x.id!==id)); setActive(null)
+  }
+
+  function openNewTask() { setEditTask(null); setTTitle(''); setTDesc(''); setTAssign(''); setTDue(''); setTStatus('todo'); setShowTask(true) }
+  function openEditTask(t: Task) { setEditTask(t); setTTitle(t.title); setTDesc(t.description); setTAssign(t.assigned_to||''); setTDue(t.due_date||''); setTStatus(t.status); setShowTask(true) }
+
+  async function saveTask() {
+    if (!tTitle.trim()||!active) return; setSaving(true)
+    const p = { title:tTitle.trim(), description:tDesc.trim(), assigned_to:tAssign||null, due_date:tDue||null, status:tStatus }
+    if (editTask) await supabase.from('tasks').update(p).eq('id',editTask.id)
+    else await supabase.from('tasks').insert({ ...p, project_id:active.id, created_by:userId })
+    await loadTasks(active.id); setShowTask(false); setSaving(false)
+  }
+
+  async function delTask(id: string) {
+    if (!confirm('Delete task?')) return
+    await supabase.from('tasks').delete().eq('id',id); setTasks(t=>t.filter(x=>x.id!==id))
+  }
+
+  async function cycleStatus(task: Task) {
+    const next = { todo:'in_progress', in_progress:'done', done:'todo' } as const
+    const s = next[task.status]
+    await supabase.from('tasks').update({ status:s }).eq('id',task.id)
+    setTasks(t=>t.map(x=>x.id===task.id?{...x,status:s}:x))
+  }
+
+  const done = tasks.filter(t=>t.status==='done')
+  const allMembers = myProfile ? [myProfile,...allUsers] : allUsers
+
+  return (
+    <div className="proj-layout">
+      {/* Projects list */}
+      <div className="proj-sidebar">
+        <div className="proj-side-head">
+          <span className="proj-side-title">Projects</span>
+          <button className="btn btn-blue btn-sm" onClick={() => setShowNewProj(true)}>+ New</button>
+        </div>
+        <div className="proj-list">
+          {loading && <div style={{ padding:14, color:'var(--text-3)', fontSize:13 }}>Loading...</div>}
+          {!loading && projects.length===0 && <div style={{ padding:14, color:'var(--text-3)', fontSize:13 }}>No projects yet</div>}
+          {projects.map(p => (
+            <div key={p.id} className={`proj-item ${active?.id===p.id?'active':''}`} onClick={() => setActive(p)}>
+              <div className="proj-dot" style={{ background:p.color }} />
+              <span className="proj-item-name">{p.name}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Board */}
+      <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+        {active ? (<>
+          <div className="page-header">
+            <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+              <div className="proj-dot" style={{ background:active.color, width:12, height:12 }} />
+              <div>
+                <div className="page-title">{active.name}</div>
+                {active.description && <div style={{ fontSize:12, color:'var(--text-2)', marginTop:1 }}>{active.description}</div>}
+              </div>
+            </div>
+            <div className="page-actions">
+              {active.created_by===userId && <button className="btn btn-red btn-sm" onClick={() => delProject(active.id)}>Delete</button>}
+              <button className="btn btn-blue btn-sm" onClick={openNewTask}>+ Add Task</button>
+            </div>
+          </div>
+
+          {tasks.length > 0 && (
+            <div className="progress-wrap">
+              <div className="progress-row">
+                <div className="progress-bar"><div className="progress-fill" style={{ width:`${Math.round(done.length/tasks.length*100)}%` }} /></div>
+                <span className="progress-text">{done.length}/{tasks.length} done</span>
+              </div>
+            </div>
+          )}
+
+          <div className="board">
+            {(['todo','in_progress','done'] as const).map(status => {
+              const col = tasks.filter(t=>t.status===status)
+              return (
+                <div key={status} className="board-col">
+                  <div className="board-col-head">
+                    <span className="board-col-title">{ST_LABEL[status]}</span>
+                    <span className="board-col-count">{col.length}</span>
+                  </div>
+                  <div className="board-tasks">
+                    {col.length===0 && <div style={{ textAlign:'center', color:'var(--text-3)', fontSize:12, padding:'12px 0' }}>No tasks</div>}
+                    {col.map(task => {
+                      const due = fmtDue(task.due_date)
+                      const assignee = task.profiles_assigned
+                      return (
+                        <div key={task.id} className="task-card" onClick={() => openEditTask(task)}>
+                          <div style={{ display:'flex', gap:8, marginBottom:6 }}>
+                            <button style={{ background:'none',border:'none',cursor:'pointer',padding:0,flexShrink:0,marginTop:1 }}
+                              onClick={e=>{e.stopPropagation();cycleStatus(task)}} title="Change status">
+                              <span className={`tag ${ST_CLASS[task.status]}`} style={{ padding:'2px 6px' }}>{ST_LABEL[task.status]}</span>
+                            </button>
+                            <button style={{ background:'none',border:'none',cursor:'pointer',color:'var(--text-3)',marginLeft:'auto',fontSize:12,padding:0,flexShrink:0 }}
+                              onClick={e=>{e.stopPropagation();delTask(task.id)}}>✕</button>
+                          </div>
+                          <div className={`task-title ${task.status==='done'?'done':''}`}>{task.title}</div>
+                          {task.description && <div className="task-desc">{task.description.slice(0,80)}{task.description.length>80?'…':''}</div>}
+                          <div className="task-foot">
+                            {assignee ? (
+                              <div className="task-assignee">
+                                <div className="task-av" style={{ background:assignee.username.charCodeAt(0)%2===0?'#e8f2fd':'#e8f7f4', color:assignee.username.charCodeAt(0)%2===0?'#2383e2':'#0f7b6c' }}>{assignee.username.slice(0,1).toUpperCase()}</div>
+                                {assignee.username}
+                              </div>
+                            ) : <span />}
+                            {due && <span className={`task-due ${due.overdue&&task.status!=='done'?'overdue':''}`}>{due.overdue&&task.status!=='done'?'⚠ ':''}{due.str}</span>}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {status==='todo' && <div className="board-add"><button className="btn btn-ghost btn-sm" style={{width:'100%',justifyContent:'center'}} onClick={openNewTask}>+ Add task</button></div>}
+                </div>
+              )
+            })}
+          </div>
+        </>) : (
+          <div className="empty">
+            <div className="empty-icon">📋</div>
+            <div className="empty-text">No project selected</div>
+            <button className="btn btn-blue" onClick={() => setShowNewProj(true)}>Create Project</button>
+          </div>
+        )}
+      </div>
+
+      {/* New project modal */}
+      {showNewProj && (
+        <div className="overlay" onClick={() => setShowNewProj(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div className="modal-head"><div className="modal-title">New Project</div><button className="btn btn-ghost btn-sm" onClick={() => setShowNewProj(false)}>✕</button></div>
+            <div className="form-group"><label className="form-label">Project Name</label><input className="input" placeholder="e.g. Study Notes, App Build" value={pName} onChange={e=>setPName(e.target.value)} autoFocus /></div>
+            <div className="form-group"><label className="form-label">Description (optional)</label><input className="input" placeholder="What's this project about?" value={pDesc} onChange={e=>setPDesc(e.target.value)} /></div>
+            <div className="form-group">
+              <label className="form-label">Color</label>
+              <div className="color-picker">{COLORS.map(c=><div key={c} className={`color-dot ${pColor===c?'selected':''}`} style={{ background:c }} onClick={()=>setPColor(c)} />)}</div>
+            </div>
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:16 }}>
+              <button className="btn btn-ghost" onClick={() => setShowNewProj(false)}>Cancel</button>
+              <button className="btn btn-blue" onClick={createProject} disabled={!pName.trim()||saving}>{saving?'Creating...':'Create'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New/edit task modal */}
+      {showTask && (
+        <div className="overlay" onClick={() => setShowTask(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div className="modal-head"><div className="modal-title">{editTask?'Edit Task':'New Task'}</div><button className="btn btn-ghost btn-sm" onClick={() => setShowTask(false)}>✕</button></div>
+            <div className="form-group"><label className="form-label">Title</label><input className="input" placeholder="What needs to be done?" value={tTitle} onChange={e=>setTTitle(e.target.value)} autoFocus /></div>
+            <div className="form-group"><label className="form-label">Description (optional)</label><textarea className="input" placeholder="More details..." value={tDesc} onChange={e=>setTDesc(e.target.value)} style={{ minHeight:70 }} /></div>
+            <div style={{ display:'flex', gap:12 }}>
+              <div className="form-group" style={{ flex:1 }}>
+                <label className="form-label">Assign to</label>
+                <select className="input" value={tAssign} onChange={e=>setTAssign(e.target.value)}>
+                  <option value="">Unassigned</option>
+                  {allMembers.map(u=><option key={u.id} value={u.id}>{u.username}{u.id===userId?' (you)':''}</option>)}
+                </select>
+              </div>
+              <div className="form-group" style={{ flex:1 }}>
+                <label className="form-label">Due Date</label>
+                <input className="input" type="date" value={tDue} onChange={e=>setTDue(e.target.value)} />
+              </div>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Status</label>
+              <div className="status-chips">
+                {(['todo','in_progress','done'] as const).map(s=><button key={s} className={`status-chip ${tStatus===s?'active':''}`} onClick={()=>setTStatus(s)}>{ST_LABEL[s]}</button>)}
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:4 }}>
+              <button className="btn btn-ghost" onClick={() => setShowTask(false)}>Cancel</button>
+              <button className="btn btn-blue" onClick={saveTask} disabled={!tTitle.trim()||saving}>{saving?'Saving...':editTask?'Save Changes':'Add Task'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

@@ -1,0 +1,186 @@
+import { useEffect, useState } from 'react'
+import { supabase } from '../lib/supabase'
+import type { Sheet, SheetRow } from '../lib/supabase'
+
+const AI_COLS = ['Name','Type','Link','What it does','Free/Paid']
+const AI_DATA = [
+  {Name:'ChatGPT',    Type:'Chat',      Link:'https://chat.openai.com',         'What it does':'Writing, coding, Q&A',          'Free/Paid':'Free + Paid'},
+  {Name:'Claude',     Type:'Chat',      Link:'https://claude.ai',               'What it does':'Analysis, long docs, coding',   'Free/Paid':'Free + Paid'},
+  {Name:'Gemini',     Type:'Chat',      Link:'https://gemini.google.com',       'What it does':'Chat + Google integration',     'Free/Paid':'Free + Paid'},
+  {Name:'Perplexity', Type:'Search',    Link:'https://perplexity.ai',           'What it does':'Real-time AI web search',       'Free/Paid':'Free + Paid'},
+  {Name:'Midjourney', Type:'Image',     Link:'https://midjourney.com',          'What it does':'Best AI image generation',      'Free/Paid':'Paid'},
+  {Name:'DALL-E 3',   Type:'Image',     Link:'https://openai.com/dall-e-3',     'What it does':'Text to image via ChatGPT',     'Free/Paid':'Paid'},
+  {Name:'Ideogram',   Type:'Image',     Link:'https://ideogram.ai',             'What it does':'Images with great text',        'Free/Paid':'Free + Paid'},
+  {Name:'Runway',     Type:'Video',     Link:'https://runwayml.com',            'What it does':'AI video generation',           'Free/Paid':'Free + Paid'},
+  {Name:'Kling AI',   Type:'Video',     Link:'https://klingai.com',             'What it does':'Realistic video gen',           'Free/Paid':'Free + Paid'},
+  {Name:'Suno',       Type:'Music',     Link:'https://suno.com',                'What it does':'Full AI songs with vocals',     'Free/Paid':'Free + Paid'},
+  {Name:'ElevenLabs', Type:'Voice',     Link:'https://elevenlabs.io',           'What it does':'Voice cloning & TTS',           'Free/Paid':'Free + Paid'},
+  {Name:'GitHub Copilot',Type:'Code',   Link:'https://github.com/features/copilot','What it does':'Code completion in IDE',    'Free/Paid':'Paid'},
+  {Name:'Cursor',     Type:'Code',      Link:'https://cursor.sh',               'What it does':'AI code editor',               'Free/Paid':'Free + Paid'},
+  {Name:'v0.dev',     Type:'UI',        Link:'https://v0.dev',                  'What it does':'Generate React UI from text',  'Free/Paid':'Free + Paid'},
+  {Name:'Grok',       Type:'Chat',      Link:'https://x.ai',                    'What it does':'Real-time AI + X/Twitter',     'Free/Paid':'Free + Paid'},
+  {Name:'Vapi.ai',    Type:'Voice AI',  Link:'https://vapi.ai',                 'What it does':'AI phone calling agents',      'Free/Paid':'Paid'},
+  {Name:'Stable Diffusion',Type:'Image',Link:'https://stability.ai',            'What it does':'Open-source image gen',        'Free/Paid':'Free'},
+  {Name:'Udio',       Type:'Music',     Link:'https://udio.com',                'What it does':'High quality AI music',        'Free/Paid':'Free + Paid'},
+  {Name:'Creatify',   Type:'Video Ads', Link:'https://creatify.ai',             'What it does':'AI ad video from product URL', 'Free/Paid':'Paid'},
+  {Name:'Llama 3',    Type:'Open Source',Link:'https://llama.meta.com',         'What it does':'Run LLM locally, self-hosted', 'Free/Paid':'Free'},
+]
+
+function isURL(s: string) { return s?.startsWith('http') }
+
+export default function Spreadsheet({ userId }: { userId: string }) {
+  const [sheets, setSheets]       = useState<Sheet[]>([])
+  const [active, setActive]       = useState<Sheet|null>(null)
+  const [rows, setRows]           = useState<SheetRow[]>([])
+  const [editing, setEditing]     = useState<{rowId:string;col:string}|null>(null)
+  const [cellVal, setCellVal]     = useState('')
+  const [showNew, setShowNew]     = useState(false)
+  const [newName, setNewName]     = useState('')
+  const [newCols, setNewCols]     = useState('Name, Link, Description, Notes')
+  const [saving, setSaving]       = useState(false)
+
+  useEffect(() => { loadSheets() }, [])
+  useEffect(() => { if (active) loadRows(active.id) }, [active?.id])
+
+  async function loadSheets() {
+    const { data } = await supabase.from('spreadsheets').select('*').order('created_at',{ascending:true})
+    if (data) { setSheets(data); if (data.length && !active) setActive(data[0]) }
+  }
+  async function loadRows(id: string) {
+    setRows([])
+    const { data } = await supabase.from('spreadsheet_rows').select('*').eq('spreadsheet_id',id).order('row_order',{ascending:true})
+    if (data) setRows(data as SheetRow[])
+  }
+
+  async function createSheet() {
+    if (!newName.trim()) return
+    setSaving(true)
+    const cols = newCols.split(',').map(c=>c.trim()).filter(Boolean)
+    const { data } = await supabase.from('spreadsheets').insert({ name:newName.trim(), columns:cols, created_by:userId }).select().single()
+    if (data) { setSheets(p=>[...p,data]); setActive(data); setRows([]) }
+    setShowNew(false); setNewName(''); setSaving(false)
+  }
+
+  async function createAISheet() {
+    setSaving(true)
+    const { data } = await supabase.from('spreadsheets').insert({ name:'AI Models', columns:AI_COLS, created_by:userId }).select().single()
+    if (data) {
+      setSheets(p=>[...p,data]); setActive(data)
+      const ins = AI_DATA.map((d,i) => ({ spreadsheet_id:data.id, data:d, row_order:i }))
+      const { data: rData } = await supabase.from('spreadsheet_rows').insert(ins).select()
+      if (rData) setRows(rData as SheetRow[])
+    }
+    setSaving(false)
+  }
+
+  async function addRow() {
+    if (!active) return
+    const empty: Record<string,string> = {}; active.columns.forEach(c => { empty[c]='' })
+    const { data } = await supabase.from('spreadsheet_rows').insert({ spreadsheet_id:active.id, data:empty, row_order:rows.length }).select().single()
+    if (data) setRows(p=>[...p, data as SheetRow])
+  }
+
+  async function delRow(id: string) {
+    await supabase.from('spreadsheet_rows').delete().eq('id',id)
+    setRows(p => p.filter(r => r.id!==id))
+  }
+
+  async function commitEdit(rowId: string) {
+    if (!editing) return
+    const row = rows.find(r=>r.id===rowId); if (!row) { setEditing(null); return }
+    const newData = { ...row.data, [editing.col]: cellVal }
+    await supabase.from('spreadsheet_rows').update({ data:newData }).eq('id',rowId)
+    setRows(p => p.map(r => r.id===rowId ? { ...r, data:newData } : r))
+    setEditing(null)
+  }
+
+  const cols = active?.columns || []
+
+  return (
+    <div className="sheet-wrap">
+      {/* Tabs */}
+      <div className="sheet-tabs">
+        {sheets.map(s => (
+          <button key={s.id} className={`sheet-tab ${active?.id===s.id?'active':''}`} onClick={() => setActive(s)}>{s.name}</button>
+        ))}
+        <button className="sheet-tab sheet-tab-new" onClick={() => setShowNew(true)}>+ New Sheet</button>
+      </div>
+
+      {active ? (<>
+        <div className="sheet-toolbar">
+          <span className="sheet-name">{active.name}</span>
+          <div style={{ display:'flex', gap:8 }}>
+            {rows.length===0 && active.name==='AI Models' && (
+              <button className="btn btn-ghost btn-sm" onClick={createAISheet} disabled={saving}>🤖 Load AI Data</button>
+            )}
+            <button className="btn btn-blue btn-sm" onClick={addRow}>+ Add Row</button>
+          </div>
+        </div>
+        <div className="table-wrap">
+          <table className="db-table">
+            <thead>
+              <tr>
+                <th style={{ width:40 }}>#</th>
+                {cols.map(c => <th key={c}>{c}</th>)}
+                <th style={{ width:40 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length===0 && (
+                <tr><td colSpan={cols.length+2} style={{ padding:32, textAlign:'center', color:'var(--text-3)' }}>No rows yet — click + Add Row</td></tr>
+              )}
+              {rows.map((row, idx) => (
+                <tr key={row.id}>
+                  <td className="row-num">{idx+1}</td>
+                  {cols.map(col => {
+                    const isEditing = editing?.rowId===row.id && editing?.col===col
+                    const val = row.data[col]||''
+                    return (
+                      <td key={col} className="cell" onClick={() => { if(!isEditing){ setEditing({rowId:row.id,col}); setCellVal(val) } }}>
+                        {isEditing
+                          ? <input className="cell-edit" value={cellVal} autoFocus onChange={e=>setCellVal(e.target.value)} onBlur={()=>commitEdit(row.id)} onKeyDown={e=>{if(e.key==='Enter')commitEdit(row.id);if(e.key==='Escape')setEditing(null)}} />
+                          : <span className="cell-val">
+                              {val ? (isURL(val) ? <a className="cell-link" href={val} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()}>{val}</a> : val) : <span style={{color:'var(--text-3)'}}>—</span>}
+                            </span>
+                        }
+                      </td>
+                    )
+                  })}
+                  <td style={{ padding:'4px 8px', textAlign:'center' }}>
+                    <button className="btn btn-ghost btn-sm" style={{ padding:'3px 7px', color:'var(--text-3)' }} onClick={()=>delRow(row.id)}>✕</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </>) : (
+        <div className="empty">
+          <div className="empty-icon">🗃️</div>
+          <div className="empty-text">No spreadsheets yet</div>
+          <div style={{ display:'flex', gap:10 }}>
+            <button className="btn btn-blue" onClick={createAISheet} disabled={saving}>🤖 Create AI Models Sheet</button>
+            <button className="btn btn-ghost" onClick={() => setShowNew(true)}>Custom Sheet</button>
+          </div>
+        </div>
+      )}
+
+      {showNew && (
+        <div className="overlay" onClick={() => setShowNew(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div className="modal-head">
+              <div className="modal-title">New Spreadsheet</div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowNew(false)}>✕</button>
+            </div>
+            <div className="form-group"><label className="form-label">Name</label><input className="input" placeholder="My Sheet" value={newName} onChange={e=>setNewName(e.target.value)} autoFocus /></div>
+            <div className="form-group"><label className="form-label">Columns (comma-separated)</label><input className="input" placeholder="Name, Link, Notes" value={newCols} onChange={e=>setNewCols(e.target.value)} /></div>
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:16 }}>
+              <button className="btn btn-ghost" onClick={() => setShowNew(false)}>Cancel</button>
+              <button className="btn btn-blue" onClick={createSheet} disabled={!newName.trim()||saving}>{saving?'Creating...':'Create'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

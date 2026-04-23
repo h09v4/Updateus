@@ -1,0 +1,84 @@
+import { useEffect, useRef, useState } from 'react'
+import { supabase } from '../lib/supabase'
+import type { Message, Room } from '../lib/supabase'
+
+const AV_COLORS = ['#2383e2','#0f7b6c','#dfab01','#e03e3e','#6940a5','#d9730d']
+function avColor(n: string) { return AV_COLORS[(n?.charCodeAt(0)||0) % AV_COLORS.length] }
+function avBg(n: string)    { return avColor(n) + '20' }
+function fmt(ts: string)    { return new Date(ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) }
+function isNewGroup(msgs: Message[], i: number) { return i===0 || msgs[i].user_id !== msgs[i-1].user_id }
+
+export default function Chat({ room, userId, title }: { room: Room; userId: string; title: string }) {
+  const [messages, setMessages] = useState<Message[]>([])
+  const [text, setText]         = useState('')
+  const [loading, setLoading]   = useState(true)
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    load()
+    const ch = supabase.channel(`chat:${room.id}`)
+      .on('postgres_changes', { event:'INSERT', schema:'public', table:'messages', filter:`room_id=eq.${room.id}` }, async p => {
+        const { data } = await supabase.from('messages').select('*, profiles(*)').eq('id', p.new.id).single()
+        if (data) { setMessages(prev => [...prev, data as Message]); scroll() }
+      }).subscribe()
+    return () => { supabase.removeChannel(ch) }
+  }, [room.id])
+
+  async function load() {
+    setLoading(true); setMessages([])
+    const { data } = await supabase.from('messages').select('*, profiles(*)').eq('room_id', room.id).order('created_at',{ascending:true}).limit(200)
+    if (data) setMessages(data as Message[])
+    setLoading(false); setTimeout(scroll, 80)
+  }
+
+  function scroll() { bottomRef.current?.scrollIntoView({ behavior:'smooth' }) }
+
+  async function send() {
+    const c = text.trim(); if (!c) return
+    setText('')
+    await supabase.from('messages').insert({ room_id:room.id, user_id:userId, content:c })
+  }
+
+  return (
+    <div className="chat-wrap">
+      <div className="page-header">
+        <div className="page-title"># {title}</div>
+      </div>
+
+      <div className="chat-msgs">
+        {loading && <div className="loading">Loading...</div>}
+        {!loading && messages.length===0 && (
+          <div className="empty"><div className="empty-icon">💬</div><div className="empty-text">No messages yet — say hi!</div></div>
+        )}
+        {messages.map((msg, i) => {
+          const isOwn = msg.user_id === userId
+          const name  = msg.profiles?.username || '?'
+          const showHead = isNewGroup(messages, i) && !isOwn
+          return (
+            <div key={msg.id} className={`msg ${isOwn?'msg-own':'msg-other'}`} style={{ marginTop: isNewGroup(messages,i)?10:2 }}>
+              {showHead && (
+                <div className="msg-head">
+                  <div style={{ width:22, height:22, borderRadius:5, background:avBg(name), color:avColor(name), display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:700,flexShrink:0 }}>
+                    {name.slice(0,2).toUpperCase()}
+                  </div>
+                  <span className="msg-user">{name}</span>
+                  <span className="msg-time">{fmt(msg.created_at)}</span>
+                </div>
+              )}
+              <div style={{ display:'flex', alignItems:'flex-end', gap:6, flexDirection:isOwn?'row-reverse':'row' }}>
+                <div className={`msg-bubble ${isOwn?'bubble-own':'bubble-other'}`}>{msg.content}</div>
+                {isOwn && isNewGroup(messages,i) && <span className="msg-time" style={{ marginBottom:3 }}>{fmt(msg.created_at)}</span>}
+              </div>
+            </div>
+          )
+        })}
+        <div ref={bottomRef} />
+      </div>
+
+      <div className="chat-input-row">
+        <input className="input chat-input" placeholder={`Message #${title}...`} value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()} }} />
+        <button className="btn btn-blue send-btn" onClick={send}>↑</button>
+      </div>
+    </div>
+  )
+}

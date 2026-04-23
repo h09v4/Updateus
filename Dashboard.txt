@@ -1,0 +1,178 @@
+import { useEffect, useState } from 'react'
+import type { Session } from '@supabase/supabase-js'
+import { supabase } from '../lib/supabase'
+import type { Profile, Room, DmRoom } from '../lib/supabase'
+import Chat from './Chat'
+import Notes from './Notes'
+import Spreadsheet from './Spreadsheet'
+import Projects from './Projects'
+
+type View = 'squad' | 'dm' | 'notes' | 'sheets' | 'projects'
+
+const AV_COLORS = ['#2383e2','#0f7b6c','#dfab01','#e03e3e','#6940a5','#d9730d']
+function avColor(name: string) { return AV_COLORS[(name?.charCodeAt(0)||0) % AV_COLORS.length] }
+function avBg(name: string) { const c = avColor(name); return c + '20' }
+
+export default function Dashboard({ session }: { session: Session }) {
+  const uid = session.user.id
+  const [profile, setProfile]     = useState<Profile|null>(null)
+  const [view, setView]           = useState<View>('squad')
+  const [groupRoom, setGroupRoom] = useState<Room|null>(null)
+  const [allUsers, setAllUsers]   = useState<Profile[]>([])
+  const [dmRooms, setDmRooms]     = useState<DmRoom[]>([])
+  const [activeDm, setActiveDm]   = useState<DmRoom|null>(null)
+  const [showDmModal, setShowDmModal] = useState(false)
+
+  useEffect(() => {
+    loadProfile()
+    loadGroupRoom()
+    loadUsers()
+    loadDMs()
+  }, [uid])
+
+  async function loadProfile() {
+    const { data } = await supabase.from('profiles').select('*').eq('id', uid).single()
+    if (data) setProfile(data)
+  }
+
+  async function loadGroupRoom() {
+    let { data: rooms } = await supabase.from('rooms').select('*').eq('type','group').limit(1)
+    let room: Room
+    if (rooms && rooms.length > 0) { room = rooms[0] }
+    else {
+      const { data: r } = await supabase.from('rooms').insert({ name:'Squad', type:'group', created_by: uid }).select().single()
+      if (!r) return; room = r
+    }
+    await supabase.from('room_members').upsert({ room_id: room.id, user_id: uid }, { onConflict:'room_id,user_id' })
+    setGroupRoom(room)
+  }
+
+  async function loadUsers() {
+    const { data } = await supabase.from('profiles').select('*').neq('id', uid)
+    if (data) setAllUsers(data)
+  }
+
+  async function loadDMs() {
+    const { data: mem } = await supabase.from('room_members').select('room_id').eq('user_id', uid)
+    if (!mem?.length) return
+    const ids = mem.map(m => m.room_id)
+    const { data: privRooms } = await supabase.from('rooms').select('*').in('id', ids).eq('type','private')
+    if (!privRooms?.length) return
+    const dms: DmRoom[] = await Promise.all(privRooms.map(async r => {
+      const { data: m } = await supabase.from('room_members').select('profiles(*)').eq('room_id',r.id).neq('user_id',uid).limit(1).single()
+      return { ...r, otherUser: (m as any)?.profiles as Profile|undefined }
+    }))
+    setDmRooms(dms)
+  }
+
+  async function startDM(user: Profile) {
+    setShowDmModal(false)
+    const existing = dmRooms.find(r => r.otherUser?.id === user.id)
+    if (existing) { setActiveDm(existing); setView('dm'); return }
+    const { data: room } = await supabase.from('rooms').insert({ name:`dm_${uid}_${user.id}`, type:'private', created_by:uid }).select().single()
+    if (!room) return
+    await supabase.from('room_members').insert([{ room_id:room.id, user_id:uid },{ room_id:room.id, user_id:user.id }])
+    const dm: DmRoom = { ...room, otherUser: user }
+    setDmRooms(p => [...p, dm]); setActiveDm(dm); setView('dm')
+  }
+
+  const initials = profile?.username?.slice(0,2).toUpperCase() || '??'
+
+  return (
+    <div className="app">
+      {/* Sidebar */}
+      <div className="sidebar">
+        <div className="sidebar-top">
+          <div className="workspace-name">
+            <span className="workspace-icon">⬡</span>
+            Nexus
+          </div>
+        </div>
+
+        <nav className="sidebar-nav">
+          {/* Chat */}
+          <div className="nav-section">
+            <div className="nav-section-title">Chat</div>
+            <button className={`nav-item ${view==='squad'?'active':''}`} onClick={() => setView('squad')}>
+              <span className="nav-icon">#</span> Squad
+            </button>
+          </div>
+
+          {/* DMs */}
+          <div className="nav-section">
+            <div className="nav-section-title">
+              Direct Messages
+              <button className="nav-add-btn" onClick={() => setShowDmModal(true)} title="New DM">+</button>
+            </div>
+            {dmRooms.map(dm => (
+              <button key={dm.id} className={`nav-item ${view==='dm'&&activeDm?.id===dm.id?'active':''}`} onClick={() => { setActiveDm(dm); setView('dm') }}>
+                <div className="nav-item-av" style={{ background: avBg(dm.otherUser?.username||'?'), color: avColor(dm.otherUser?.username||'?') }}>
+                  {dm.otherUser?.username?.slice(0,1).toUpperCase()||'?'}
+                </div>
+                {dm.otherUser?.username || 'Unknown'}
+              </button>
+            ))}
+            {dmRooms.length === 0 && <div style={{ padding:'4px 8px', fontSize:12, color:'var(--text-3)' }}>No DMs yet</div>}
+          </div>
+
+          {/* Workspace */}
+          <div className="nav-section">
+            <div className="nav-section-title">Workspace</div>
+            <button className={`nav-item ${view==='notes'?'active':''}`}    onClick={() => setView('notes')}>
+              <span className="nav-icon">📝</span> Notes
+            </button>
+            <button className={`nav-item ${view==='sheets'?'active':''}`}   onClick={() => setView('sheets')}>
+              <span className="nav-icon">🗃️</span> Spreadsheets
+            </button>
+            <button className={`nav-item ${view==='projects'?'active':''}`} onClick={() => setView('projects')}>
+              <span className="nav-icon">📋</span> Projects
+            </button>
+          </div>
+        </nav>
+
+        <div className="sidebar-footer">
+          <div className="user-av" style={{ background: avBg(profile?.username||'?'), color: avColor(profile?.username||'?') }}>{initials}</div>
+          <div className="user-info">
+            <div className="user-name">{profile?.username || '...'}</div>
+            <div className="user-online">● Online</div>
+          </div>
+          <button className="signout-btn" onClick={() => supabase.auth.signOut()} title="Sign out">↩</button>
+        </div>
+      </div>
+
+      {/* Main content */}
+      <div className="main">
+        {view==='squad'    && groupRoom && <Chat room={groupRoom} userId={uid} title="Squad" />}
+        {view==='squad'    && !groupRoom && <div className="loading">Setting up...</div>}
+        {view==='dm'       && activeDm  && <Chat room={activeDm} userId={uid} title={activeDm.otherUser?.username||'DM'} />}
+        {view==='notes'    && <Notes userId={uid} />}
+        {view==='sheets'   && <Spreadsheet userId={uid} />}
+        {view==='projects' && <Projects userId={uid} allUsers={allUsers} myProfile={profile} />}
+      </div>
+
+      {/* New DM modal */}
+      {showDmModal && (
+        <div className="overlay" onClick={() => setShowDmModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <div className="modal-title">Start a DM</div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowDmModal(false)}>✕</button>
+            </div>
+            {allUsers.length === 0
+              ? <p style={{ color:'var(--text-2)', fontSize:14 }}>No other users yet. Share the app with friends first!</p>
+              : allUsers.map(u => (
+                  <div key={u.id} className="user-list-item" onClick={() => startDM(u)}>
+                    <div className="user-av" style={{ background: avBg(u.username), color: avColor(u.username) }}>{u.username.slice(0,2).toUpperCase()}</div>
+                    <div>
+                      <div style={{ fontWeight:600, fontSize:14 }}>{u.username}</div>
+                      {u.full_name && <div style={{ fontSize:12, color:'var(--text-3)' }}>{u.full_name}</div>}
+                    </div>
+                  </div>
+                ))
+            }
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
